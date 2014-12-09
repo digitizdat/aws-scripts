@@ -1,4 +1,4 @@
-scripts
+AWS scripts
 =======
 
-Miscellaneous scripts that others might find useful
+Miscellaneous AWS scripts that are useful across projects
