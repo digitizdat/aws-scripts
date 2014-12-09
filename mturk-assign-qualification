@@ -1,0 +1,100 @@
+#!/usr/bin/env python
+#
+# glacier-backup
+#
+# The AWS credentials are read from the ~/.aws.conf file, which is in INI
+# format.  I believe an improvement would be to use IAM Role credentials
+# instead, but that requires assigning that role to the instance during
+# creation time, and it's already too late for that for what I wrote this
+# for.
+#
+# Oct. 29, 2014 - Martin McGreal
+#
+
+import sys
+import os
+import argparse
+import pwd
+import ConfigParser
+from boto.mturk.connection import MTurkConnection
+
+
+# Parse the command-line args
+parser = argparse.ArgumentParser()
+parser.add_argument('--sandbox', action='store_true', help="Apply this work to the sandbox environment.")
+parser.add_argument('--dryrun', action='store_true', help="Don't actually do anything, just say what would be done.")
+parser.add_argument('--verbose', action='store_true', help="Print diagnostic information.")
+parser.add_argument('--workers', dest='wfile', type=str, default=None, help="Specify a file to read worker IDs from.")
+parser.add_argument('--awscreds', dest='awscreds', type=str, default=None, help="Specify a file to read AWS credentials from.")
+parser.add_argument('qualification', type=str, help="Specify the qualification ID.")
+parser.add_argument('workers', type=str, nargs='*', help="Specify the worker ID.")
+
+args = parser.parse_args()
+
+# Read the AWS credentials from the ~/.aws.conf file.
+if args.awscreds is None:
+    pwent = pwd.getpwuid(os.getuid())
+    homedir = pwent.pw_dir
+    credfile = os.path.expanduser(homedir+'/.aws.conf')
+else:
+    credfile = args.awscreds
+
+cp = ConfigParser.ConfigParser()
+cp.read([credfile])
+access_key = cp.get('mturk', 'access_key')
+secret_key = cp.get('mturk', 'secret_key')
+
+# Assign the relevant host
+if args.sandbox:
+    mthost = 'mechanicalturk.sandbox.amazonaws.com'
+else:
+    mthost = 'mechanicalturk.amazonaws.com'
+
+
+# Validate that the given archive file exists.
+if args.wfile is not None and not os.access(args.wfile, os.R_OK):
+    print("ERROR: "+args.wfile+" is unreadable.")
+    sys.exit(1);
+elif args.wfile is not None:
+    workers = [x.strip() for x in open(args.wfile).readlines() if x.strip() != '']
+elif args.wfile is None:
+    workers = args.workers
+
+# Connect to Mturk
+mtc = MTurkConnection(aws_access_key_id=access_key,
+                      aws_secret_access_key=secret_key,
+                      host=mthost)
+
+# Look up and validate the given qualification type ID.
+qt = mtc.get_qualification_type(args.qualification)
+if len(qt) != 1:
+    print("ERROR: search for qualification type ID "+args.qualification+" returned "+str(len(qt))+" results.")
+    sys.exit(1)
+
+qt = qt[0]
+alreadyhaveit = []
+
+# Find out which workers already have this qualification, so we don't try to
+# assign it to those who already have it (which generates an exception).
+for q in mtc.get_all_qualifications_for_qual_type(qt.QualificationTypeId):
+    alreadyhaveit += [q.SubjectId]
+
+if args.verbose is True:
+    print "sandbox: "+str(args.sandbox)
+    print "dryrun: "+str(args.dryrun)
+    print "workers: "+str(workers)
+    print "qualification: "+str(qt.Name)
+
+# Do the work.
+for worker in workers:
+    if worker in alreadyhaveit:
+        if args.verbose:
+            print("Worker "+worker+" already has qualification "+qt.QualificationTypeId)
+        continue
+    if args.dryrun is True:
+        print("Would assign qualification "+qt.QualificationTypeId+" to worker "+worker)
+    else:
+        if args.verbose is True:
+            print("Assigning qualification "+qt.QualificationTypeId+" to worker "+worker)
+        mtc.assign_qualification(qt.QualificationTypeId, worker)
+
