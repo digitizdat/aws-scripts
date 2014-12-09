@@ -16,16 +16,56 @@ import os
 import argparse
 import pwd
 import ConfigParser
+import eventlet
 from boto.glacier.layer1 import Layer1
 from boto.glacier.vault import Vault
 from boto.glacier.concurrent import ConcurrentUploader
 
 
+def connect(access_key, secret_key):
+    """Return a connection to the Glacier vault."""
+    return Layer1(access_key, secret_key)
+
+def upload(conn, archive):
+    """Upload the given archive to the vault using the connection conn."""
+    if os.path.isdir(archive):
+        files = os.listdir(archive)
+        pool = eventlet.GreenPool(len(files))
+
+        # Spawn eventlets to back up each member of the directory
+        g = []
+        for f in files:
+            if args.verbose:
+                print("GreenPool Free: %d" % pool.free())
+                print("GreenPool Running: %d" % pool.running())
+                print("GreenPool Waiting: %d" % pool.waiting())
+            g.append(pool.spawn(upload, conn, os.path.normpath(archive+'/'+f)))
+
+        # Collect the results
+        for t in g:
+            aid = t.wait()
+            if args.verbose:
+                print("Archive ID: %s" % aid)
+
+    else:
+        # Validate that the given archive file exists.
+        if not os.access(archive, os.R_OK):
+            print("ERROR: "+archive+" is unreadable.")
+            return None
+ 
+        if args.verbose:
+            print("Uploading "+archive)
+        return ConcurrentUploader(conn, args.vault, args.chunksize).upload(archive, archive)
+
+
+
 # Parse the command-line args
 parser = argparse.ArgumentParser()
-parser.add_argument('archive', type=str, help="Specify the name of the archive file to upload.")
-parser.add_argument('--vault', dest='vault', type=str, default='HRSE-Backup', help="Specify the name of the vault.")
-parser.add_argument('--chunksize', dest='chunksize', type=int, default=32768, help="Specify the upload chunk size.")
+parser.add_argument('archive', type=str, nargs='*', help="Specify the name of the archive file to upload.")
+parser.add_argument('--vault', '-a', dest='vault', type=str, default='HRSE-Backup', help="Specify the name of the vault.")
+parser.add_argument('--chunksize', '-c', type=int, default=32768, help="Specify the upload chunk size.")
+parser.add_argument('--inventory', '-i', action='store_true', help="Initiate an inventory against the vault.")
+parser.add_argument('--verbose', '-v', action='store_true', help="Initiate an inventory against the vault.")
 args = parser.parse_args()
 
 # Read the AWS credentials from the ~/.aws.conf file.
@@ -36,21 +76,25 @@ cp.read([os.path.expanduser(homedir+'/.aws.conf')])
 access_key = cp.get('glacier', 'access_key')
 secret_key = cp.get('glacier', 'secret_key')
 
-# Validate that the given archive file exists.
-if not os.access(args.archive, os.R_OK):
-    print("ERROR: "+args.archive+" is unreadable.")
-    sys.exit(1);
- 
 # Connect to the Glacier vault
-glayer1 = Layer1(access_key, secret_key)
+v = connect(access_key, secret_key)
 
-# Upload the archive
-print("Uploading "+args.archive)
-uploader = ConcurrentUploader(glayer1, args.vault, args.chunksize)
-aid = uploader.upload(args.archive, args.archive)
+# If it's just an inventory job, do that.
+if args.inventory:
+    vault = Vault(conn)
+    if args.verbose:
+        print("Inventory job ID: %s\n" % vault.retrieve_inventory())
+
+if not args.archive:
+    sys.exit(0)
+
+# Upload the archive(s)
+for a in args.archive:
+    aid = upload(v, a)
 
 # Print the returned archive ID.
-print("%s" % (aid))
+if args.verbose:
+    print("Archive ID: %s" % (str(aid)))
 
 sys.exit(0)
 
