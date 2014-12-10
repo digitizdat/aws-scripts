@@ -64,7 +64,7 @@ parser.add_argument('--chunksize', '-c', type=int, default=32768, help="Specify 
 parser.add_argument('--inventory', '-i', action='store_true', help="Initiate an inventory against the vault.")
 parser.add_argument('--list-vaults', '-l', dest='listvaults', action='store_true', help="List vaults.")
 parser.add_argument('--list-jobs', '-j', dest='listjobs', action='store_true', help="List jobs.")
-parser.add_argument('--get-job-output', '-g', dest='getjoboutput', type=str, default=None, help="Specify the job ID for which to pull results.")
+parser.add_argument('--get-job-output', '-g', dest='jobid', type=str, default=None, help="Specify the job ID for which to pull results.")
 parser.add_argument('--create-vault', '-n', dest='createvault', action='store_true', help="Create a new vault.")
 parser.add_argument('--delete-vault', '-d', dest='deletevault', action='store_true', help="Delete a vault.")
 parser.add_argument('--verbose', '-v', action='store_true', help="Initiate an inventory against the vault.")
@@ -144,7 +144,7 @@ if args.listjobs:
         print(fmt % (j['Action'], j['StatusCode'], j['JobId']))
 
 # Get job output for job X
-if args.getjoboutput:
+if args.jobid:
     if args.verbose:
         print("Retrieving job output for job ID %s" % args.jobid)
     print layer1.get_job_output(args.vault, args.jobid)
