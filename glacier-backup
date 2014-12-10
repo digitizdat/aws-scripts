@@ -59,10 +59,12 @@ def upload(conn, archive):
 # Parse the command-line args
 parser = argparse.ArgumentParser()
 parser.add_argument('archive', type=str, nargs='*', help="Specify the name of the archive file to upload.")
-parser.add_argument('--vault', '-a', dest='vault', type=str, default='HRSE-Backup', help="Specify the name of the vault.")
+parser.add_argument('--vault', '-a', dest='vault', type=str, default=None, required=True, help="Specify the name of the vault.")
 parser.add_argument('--chunksize', '-c', type=int, default=32768, help="Specify the upload chunk size.")
 parser.add_argument('--inventory', '-i', action='store_true', help="Initiate an inventory against the vault.")
 parser.add_argument('--list-vaults', '-l', dest='listvaults', action='store_true', help="List vaults.")
+parser.add_argument('--list-jobs', '-j', dest='listjobs', action='store_true', help="List jobs.")
+parser.add_argument('--get-job-output', '-g', dest='getjoboutput', type=str, default=None, help="Specify the job ID for which to pull results.")
 parser.add_argument('--verbose', '-v', action='store_true', help="Initiate an inventory against the vault.")
 args = parser.parse_args()
 
@@ -95,6 +97,24 @@ if args.listvaults:
     if args.verbose:
         print("Retrieving list of vaults...")
     print layer1.list_vaults()
+
+# List any outstanding jobs
+if args.listjobs:
+    if args.verbose:
+        print("Retrieving list of jobs...")
+    results = layer1.list_jobs(args.vault)
+
+    fmt = "%-20s %-12s %-92s"
+    print(fmt % ("Action", "StatusCode", "JobId"))
+    print(fmt % ('-'*18, '-'*10, '-'*92))
+    for j in results['JobList']:
+        print(fmt % (j['Action'], j['StatusCode'], j['JobId']))
+
+# Get job output for job X
+if args.getjoboutput:
+    if args.verbose:
+        print("Retrieving job output for job ID %s" % args.jobid)
+    print layer1.get_job_output(args.vault, args.jobid)
 
 if not args.archive:
     sys.exit(0)
