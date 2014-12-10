@@ -18,13 +18,10 @@ import pwd
 import ConfigParser
 import eventlet
 from boto.glacier.layer1 import Layer1
-from boto.glacier.vault import Vault
+from boto.glacier.layer2 import Layer2
 from boto.glacier.concurrent import ConcurrentUploader
 
 
-def connect(access_key, secret_key):
-    """Return a connection to the Glacier vault."""
-    return Layer1(access_key, secret_key)
 
 def upload(conn, archive):
     """Upload the given archive to the vault using the connection conn."""
@@ -65,6 +62,7 @@ parser.add_argument('archive', type=str, nargs='*', help="Specify the name of th
 parser.add_argument('--vault', '-a', dest='vault', type=str, default='HRSE-Backup', help="Specify the name of the vault.")
 parser.add_argument('--chunksize', '-c', type=int, default=32768, help="Specify the upload chunk size.")
 parser.add_argument('--inventory', '-i', action='store_true', help="Initiate an inventory against the vault.")
+parser.add_argument('--list-vaults', '-l', dest='listvaults', action='store_true', help="List vaults.")
 parser.add_argument('--verbose', '-v', action='store_true', help="Initiate an inventory against the vault.")
 args = parser.parse_args()
 
@@ -76,21 +74,34 @@ cp.read([os.path.expanduser(homedir+'/.aws.conf')])
 access_key = cp.get('glacier', 'access_key')
 secret_key = cp.get('glacier', 'secret_key')
 
+
 # Connect to the Glacier vault
-v = connect(access_key, secret_key)
+layer1 = Layer1(access_key, secret_key)
+layer2 = Layer2(access_key, secret_key)
 
 # If it's just an inventory job, do that.
 if args.inventory:
-    vault = Vault(conn)
     if args.verbose:
-        print("Inventory job ID: %s\n" % vault.retrieve_inventory())
+        print("Retrieving vault "+args.vault)
+    vault = layer2.get_vault(args.vault)
+    if args.verbose:
+        print("Initiating inventory for vault: "+args.vault)
+    iid = vault.retrieve_inventory()
+    if args.verbose:
+        print("Inventory job ID: %s" % iid)
+
+# List the vaults
+if args.listvaults:
+    if args.verbose:
+        print("Retrieving list of vaults...")
+    print layer1.list_vaults()
 
 if not args.archive:
     sys.exit(0)
 
 # Upload the archive(s)
 for a in args.archive:
-    aid = upload(v, a)
+    aid = upload(layer1, a)
 
 # Print the returned archive ID.
 if args.verbose:
