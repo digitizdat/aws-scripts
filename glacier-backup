@@ -17,6 +17,7 @@ import argparse
 import pwd
 import ConfigParser
 import eventlet
+import pandas as pd
 from boto.glacier.layer1 import Layer1
 from boto.glacier.layer2 import Layer2
 from boto.glacier.concurrent import ConcurrentUploader
@@ -68,6 +69,7 @@ parser.add_argument('--get-job-output', '-g', dest='jobid', type=str, default=No
 parser.add_argument('--create-vault', '-n', dest='createvault', action='store_true', help="Create a new vault.")
 parser.add_argument('--delete-vault', '-d', dest='deletevault', action='store_true', help="Delete a vault.")
 parser.add_argument('--verbose', '-v', action='store_true', help="Initiate an inventory against the vault.")
+parser.add_argument('--maxwidth', '-w', type=int, default=None, help="Set the maximum column width (for use with --get-job-output).")
 args = parser.parse_args()
 
 # Read the AWS credentials from the ~/.aws.conf file.
@@ -147,7 +149,11 @@ if args.listjobs:
 if args.jobid:
     if args.verbose:
         print("Retrieving job output for job ID %s" % args.jobid)
-    print layer1.get_job_output(args.vault, args.jobid)
+    output = layer1.get_job_output(args.vault, args.jobid)
+    df = pd.DataFrame(output['ArchiveList'])
+    if args.maxwidth:
+        pd.options.display.max_colwidth = args.maxwidth
+    print df.to_string(justify='left')
 
 if not args.archive:
     sys.exit(0)
