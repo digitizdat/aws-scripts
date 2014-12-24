@@ -70,16 +70,21 @@ parser.add_argument('--create-vault', '-n', dest='createvault', action='store_tr
 parser.add_argument('--delete-vault', '-d', dest='deletevault', action='store_true', help="Delete a vault.")
 parser.add_argument('--verbose', '-v', action='store_true', help="Initiate an inventory against the vault.")
 parser.add_argument('--maxwidth', '-w', type=int, default=None, help="Set the maximum column width (for use with --get-job-output).")
+parser.add_argument('--awsconf', '-b', type=str, default=None, help="Specify the path to the aws.conf file.")
 args = parser.parse_args()
 
 # Read the AWS credentials from the ~/.aws.conf file.
-pwent = pwd.getpwuid(os.getuid())
-homedir = pwent.pw_dir
+if args.awsconf is None:
+    pwent = pwd.getpwuid(os.getuid())
+    homedir = pwent.pw_dir
+    acpath = os.path.expanduser(homedir+'/.aws.conf')
+else:
+    acpath = args.awsconf
+
 cp = ConfigParser.ConfigParser()
-cp.read([os.path.expanduser(homedir+'/.aws.conf')])
+cp.read([acpath])
 access_key = cp.get('glacier', 'access_key')
 secret_key = cp.get('glacier', 'secret_key')
-
 
 # Connect to the Glacier vault
 layer1 = Layer1(access_key, secret_key)
