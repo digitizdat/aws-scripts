@@ -1,0 +1,226 @@
+#!/usr/bin/env ksh93
+#
+# makesnap
+#
+# This program is designed to create an AWS snapshot for the volume hosting the
+# given filesystem, and then prune any other snapshots made by this script for
+# the same volume according to the given pruning rule, which is for now simply
+# a count of how many to keep, pruning the oldest first.
+#
+# If you want to simply create an ad hoc snapshot for a given volume from the
+# CL, you should instead use the ec2-create-snapshot command.
+#
+# This program can be run out of the crontab of any server that has IAM
+# permissions to...
+#
+#    {
+#        "Version": "2012-10-17",
+#        "Statement": [
+#            {
+#                "Effect": "Allow",
+#                "Action": [
+#                    "ec2:CreateSnapshot",
+#                    "ec2:CreateTags",
+#                    "ec2:DeleteSnapshot",
+#                    "ec2:DescribeSnapshots",
+#                    "ec2:DescribeVolumes",
+#                    "ec2:DescribeTags"
+#                ],
+#                "Resource": [
+#                    "*"
+#                ]
+#            }
+#        ]
+#    }
+#
+# Your typical crontab entry in /etc/crontab looks something like this:
+#
+# 0 9 * * * root /data/bin/makesnap -vv -k 10 -n "/data on foohost" /dev/xvdf >> /var/log/makesnap.log 2>&1
+#
+# May 2, 2016 - Martin McGreal
+#
+
+# Environment variables
+export AWS_SECRET_KEY='spam'
+export AWS_ACCESS_KEY='eggs'
+export EC2_HOME=${EC2_HOME:-/opt/aws/apitools/ec2}
+export JAVA_HOME=${JAVA_HOME:-/usr/lib/jvm/jre}
+PATH=/opt/aws/bin:/bin:/usr/bin:/sbin:/usr/sbin:$PATH
+
+# Global variables
+typeset self=${0##*/}
+typeset verbose=0
+
+
+# Functions
+
+function usage
+{
+    print -u2 "usage: $self [-hv] [-d description] [-k keepcopies] [-n name] volid"
+    print -u2 "\t-d description. The description of the snapshot. This is auto-generated if not provided."
+    print -u2 "\t-k keepcopies. The number of copies to keep in rotation."
+    print -u2 "\t-n name. The value to assign the Name tag for the snapshot."
+    print -u2 "\t-h Help. Print this usage message, and exit w/code 0."
+    print -u2 "\t-v Verbose. Print diagnostic messages."
+}
+
+function log
+{
+    if ((verbose)); then
+        print -- "$(date): $*"
+    fi
+}
+
+function error
+{
+    print -u2 -- "$(date): ERROR: $*"
+}
+
+
+# Main starts here
+typeset description myblk myblkreal myinstid myvolid blk instid volid name
+typeset keepcopies=10
+typeset -A snaplist
+typeset -A vollist
+set -A dlist
+
+# Parse the command line arguments
+while getopts ":hvd:k:n:" opt; do
+    case $opt in
+        h) usage; exit 0;;
+        v) verbose=1;;
+        k) keepcopies=$OPTARG;;
+        d) description=$OPTARG;;
+        n) name=$OPTARG;;
+        \?) error "-$OPTARG is not a valid option."
+            usage; exit 1;;
+    esac
+done
+
+shift $(expr $OPTIND - 1)
+myblk=$1
+
+if [[ -z "${myblk}" ]]; then
+    usage
+    exit 1
+fi
+
+# Determine if the given block device is actually a block device.
+log "Validating that ${myblk} is a valid block device"
+
+set -- $(ls -lL ${myblk})
+if [[ "${1:0:1}" != "b" ]]; then
+    error "${myblk} is not a valid block device."
+    exit 1
+fi
+
+# Get the current instance ID
+log "Querying this host's instance ID"
+if ! type ec2-metadata >/dev/null 2>&1; then
+    ec2metadata --instance-id |read myinstid
+else
+    ec2-metadata -i |read key myinstid
+fi
+
+# If no description was provided via the -d switch, make one up.
+if [[ -z "${description}" ]]; then
+
+    # If the given device name is actually a symlink, get the real name. We need
+    # this to query the list of mount points on it.
+    set -- $(ls -l ${myblk})
+    if [[ "${1:0:1}" == "l" ]]; then
+        myblkreal=$(readlink -f ${myblk})
+    else
+        myblkreal=${myblk}
+    fi
+
+    cat /proc/mounts |while read dev mntpt junk; do
+        [[ "${dev}" == @(${myblkreal}*) ]] && fsmnts[${#fsmnts[@]}]=${mntpt}
+    done
+
+    if [[ ! -z "${fsmnts[@]}" ]]; then
+        description="Snapshot of vol hosting ${fsmnts[@]} on instance ${myinstid}"
+    else
+        description="Snapshot of ${myblk}"
+    fi
+fi
+
+
+# Get the volume ID
+log "Querying the volume ID for ${myblk}"
+ec2-describe-volumes |while read v volid instid blk junk; do
+    # First build a table of all volumes assigned to this instance. We want
+    # this information in a table so that we can query it multiple times, in
+    # case the device name in the attachment information differs from the
+    # actual block device name (e.g. /dev/sdf instead of /dev/xvdf), which is
+    # especially common when the original device that was assigned to the
+    # instance was replaced with a new one when, for instance, the volume had
+    # to be recovered from a previous snapshot.
+    [[ "${instid}" == "${myinstid}" ]] && vollist[${blk}]=${volid}
+done
+
+# First check for the block device that we already assume is correct, but if
+# that doesn't work, try again with alternate nomeclature. That is, if the
+# block device was '/dev/sd__' and that didn't work, try '/dev/xvd__', and
+# vice-versa.
+if [[ ! -z "${vollist[${myblk}]}" ]]; then
+    myvolid=${vollist[${myblk}]}
+elif [[ ! -z "${vollist[${myblk//dev\/xvd/dev/sd}]}" ]]; then
+    myvolid=${vollist[${myblk//dev\/xvd/dev/sd}]}
+elif [[ ! -z "${vollist[${myblk//dev\/sd/dev/xvd}]}" ]]; then
+    myvolid=${vollist[${myblk//dev\/sd/dev/xvd}]}
+fi
+
+if [[ -z "${myvolid}" ]]; then
+    error "no volume ID found for block device ${myblk}"
+    exit 1
+fi
+
+log "Found ${myblk} volume: ${myvolid}"
+
+# Initiate the snapshot
+log "Creating snapshot for ${myvolid}"
+ec2-create-snapshot -d "${description}" ${myvolid} |read j1 mysnapid j2
+if [[ "${j1}" != "SNAPSHOT" ]]; then
+    error "${j1} ${mysnapid} ${j2}"
+    exit 1
+fi
+
+log "Snapshot ${mysnapid} initiated"
+
+# Assign a tag to the snapshot that identifies it as being made by this script,
+# and therefore a candidate for expiration by the expiration schedule.
+log "Assigning tags to snapshot ${mysnapid}"
+ec2-create-tags ${mysnapid} -t "Group=makesnap" >/dev/null
+
+# If the user requested a name for this snapshot, set the Name tag.
+[[ ! -z "${name}" ]] && ec2-create-tags ${mysnapid} -t "Name=${name}" >/dev/null
+
+#
+# Delete the oldest snapshots until we're down to keepcopies copies.
+#
+
+# Start by loading an array with the IDs of all snapshots that match our volume
+# ID.
+typeset -A snaplist
+ec2-describe-snapshots --filter "tag:Group=makesnap"|while read j1 snapid volid status starttime junk; do
+    [[ "${j1}" != "SNAPSHOT" ]] && continue
+
+    starttime=$(echo ${starttime} |tr -d -- '-T:+')
+    [[ "${volid}" == "${myvolid}" ]] && snaplist["${starttime}"]=${snapid}
+done
+
+# Now sort the list by date. (This is actually a lexical sort by ASCII value,
+# but it will work since the date is numeric starting w/the year.)
+set -s ${!snaplist[@]}
+set -A dlist $*
+
+# If we haven't yet stored keepcopies snapshots, then there's nothing to do.
+((keepcopies > ${#dlist[@]})) && exit 0
+
+# Delete all but the last keepcopies snapshots.
+for dstamp in ${dlist[@]:0:${#dlist[@]}-${keepcopies}}; do
+    log "Deleting old snapshot ${snaplist[${dstamp}]}"
+    ec2-delete-snapshot ${snaplist[${dstamp}]} >/dev/null
+done
+
