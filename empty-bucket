@@ -1,0 +1,33 @@
+#!/usr/bin/env python
+#
+# empty-bucket
+#
+# Sometimes you just want to empty a whole S3 bucket.
+#
+# May 21, 2016 - Martin McGreal, CTY
+#
+# Copyright 2016 by CTY.  All rights reserved.
+#
+
+import argparse
+import boto3
+import sys
+
+
+# Main starts here
+parser = argparse.ArgumentParser()
+parser.add_argument('bucket', type=str, help="Specify the bucket")
+args = parser.parse_args()
+
+sys.stdout.write("Are you sure you want to empty %s? [y/n] " % args.bucket)
+sys.stdout.flush()
+
+answer = sys.stdin.readline()
+if answer.strip() not in ['y', 'Y', 'yes', 'Yes']:
+    print("Aborting.")
+    sys.exit(1)
+
+s3 = boto3.resource('s3')
+images = s3.Bucket(args.bucket)
+print(images.objects.delete())
+
